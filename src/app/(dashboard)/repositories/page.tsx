@@ -4,6 +4,7 @@ import { prisma } from "@/lib/db/prisma";
 import { RepositoryList } from "@/components/RepositoryList";
 import { ConnectGitHubButton } from "@/components/ConnectGitHubButton";
 import type { RepositorySummary } from "@/types/github";
+type RepositoryFilter = "all" | "public" | "private";
 
 /**
  * /repositories — main dashboard. Server-renders the repo list from DB,
@@ -16,7 +17,7 @@ export const dynamic = "force-dynamic"; // always reflect latest DB state
 export default async function RepositoriesPage({
   searchParams,
 }: {
-  searchParams: Promise<{ installed?: string }>;
+  searchParams: Promise<{ installed?: string; q?: string; filter?: string }>;
 }) {
   const user = await requireUser().catch(() => {
     redirect("/login");
@@ -25,6 +26,11 @@ export default async function RepositoriesPage({
   if (!user) redirect("/login");
 
   const params = await searchParams;
+  const filter: RepositoryFilter =
+    params.filter === "public" || params.filter === "private"
+      ? params.filter
+      : "all";
+  const query = typeof params.q === "string" ? params.q : "";
 
   // Fetch installations + repos in two parallel queries.
   const [installations, repos] = await Promise.all([
@@ -98,6 +104,8 @@ export default async function RepositoriesPage({
         repositories={data}
         hasInstallation={hasInstallation}
         manageUrl={manageUrl}
+        query={query}
+        filter={filter}
       />
 
       {/* Installation footer — list each install for transparency. */}

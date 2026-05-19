@@ -1,41 +1,45 @@
-"use client";
-
-import { useMemo, useState } from "react";
+import Link from "next/link";
 import { RepositoryCard } from "./RepositoryCard";
-import { State } from "./ui";
+import { State, cn } from "./ui";
 import { ConnectGitHubButton } from "./ConnectGitHubButton";
 import { RepositorySummary } from "@/types/github";
 
+type Filter = "all" | "public" | "private";
+
 interface RepositoryListProps {
   repositories: RepositorySummary[];
-  /** When true, show the "Manage on GitHub" deep-link instead of Connect button */
   hasInstallation?: boolean;
   manageUrl?: string;
+  query?: string;
+  filter?: Filter;
 }
 
-type Filter = "all" | "public" | "private";
+function filterHref(filter: Filter, query: string): string {
+  const params = new URLSearchParams();
+  if (query) params.set("q", query);
+  if (filter !== "all") params.set("filter", filter);
+  const qs = params.toString();
+  return qs ? `/repositories?${qs}` : "/repositories";
+}
 
 export function RepositoryList({
   repositories,
   hasInstallation = false,
   manageUrl,
+  query = "",
+  filter = "all",
 }: RepositoryListProps) {
-  const [query, setQuery] = useState("");
-  const [filter, setFilter] = useState<Filter>("all");
-
-  const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    return repositories.filter((r) => {
-      if (filter === "private" && !r.private) return false;
-      if (filter === "public" && r.private) return false;
-      if (!q) return true;
-      return (
-        r.name.toLowerCase().includes(q) ||
-        r.fullName.toLowerCase().includes(q) ||
-        (r.description ?? "").toLowerCase().includes(q)
-      );
-    });
-  }, [repositories, query, filter]);
+  const q = query.trim().toLowerCase();
+  const filtered = repositories.filter((r) => {
+    if (filter === "private" && !r.private) return false;
+    if (filter === "public" && r.private) return false;
+    if (!q) return true;
+    return (
+      r.name.toLowerCase().includes(q) ||
+      r.fullName.toLowerCase().includes(q) ||
+      (r.description ?? "").toLowerCase().includes(q)
+    );
+  });
 
   if (repositories.length === 0) {
     return (
@@ -63,11 +67,9 @@ export function RepositoryList({
 
   return (
     <div>
-      {/* Toolbar */}
       <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex flex-1 items-center gap-2">
-          <div className="relative flex-1 sm:max-w-md">
-            {/* Search input */}
+          <form action="/repositories" className="relative flex-1 sm:max-w-md">
             <svg
               width="14"
               height="14"
@@ -81,35 +83,36 @@ export function RepositoryList({
               <circle cx="11" cy="11" r="8" />
               <line x1="21" y1="21" x2="16.65" y2="16.65" />
             </svg>
+            {filter !== "all" ? (
+              <input type="hidden" name="filter" value={filter} />
+            ) : null}
             <input
               type="search"
+              name="q"
               placeholder="Search repositories"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
+              defaultValue={query}
               className="h-9 w-full rounded-md border border-gray-4 bg-gray-1 pl-8 pr-3 text-sm text-white placeholder:text-gray-7 focus:border-gray-6 focus:outline-none focus:ring-1 focus:ring-gray-6"
             />
-          </div>
+          </form>
 
-          {/* Filter pills */}
           <div className="flex h-9 items-center gap-0.5 rounded-md border border-gray-4 bg-gray-1 p-0.5">
             {(["all", "public", "private"] as const).map((f) => (
-              <button
+              <Link
                 key={f}
-                onClick={() => setFilter(f)}
-                className={
-                  "h-7 rounded-[5px] px-2.5 text-xs font-medium capitalize transition-colors " +
-                  (filter === f
+                href={filterHref(f, query)}
+                className={cn(
+                  "inline-flex h-7 items-center rounded-[5px] px-2.5 text-xs font-medium capitalize transition-colors",
+                  filter === f
                     ? "bg-white text-black"
-                    : "text-gray-7 hover:bg-gray-3 hover:text-white")
-                }
+                    : "text-gray-7 hover:bg-gray-3 hover:text-white",
+                )}
               >
                 {f}
-              </button>
+              </Link>
             ))}
           </div>
         </div>
 
-        {/* Manage on GitHub */}
         {hasInstallation && manageUrl ? (
           <a
             href={manageUrl}
@@ -134,11 +137,12 @@ export function RepositoryList({
         ) : null}
       </div>
 
-      {/* Results */}
       {filtered.length === 0 ? (
         <State
           title="No matches"
-          description={`Nothing matches "${query}". Try a different search.`}
+          description={
+            query ? `Nothing matches "${query}". Try a different search.` : "No repositories match this filter."
+          }
         />
       ) : (
         <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3">
@@ -148,7 +152,6 @@ export function RepositoryList({
         </div>
       )}
 
-      {/* Counter */}
       <p className="mt-6 text-xs text-gray-7">
         Showing {filtered.length} of {repositories.length}
       </p>
