@@ -14,6 +14,8 @@ interface RepoDetailClientProps {
   owner: string;
   repo: string;
   defaultBranch: string;
+  initialCommits: CommitSummary[];
+  initialCommitsError: string | null;
 }
 
 type Tab = "commits" | "files";
@@ -68,6 +70,8 @@ export function RepoDetailClient({
   owner,
   repo,
   defaultBranch,
+  initialCommits,
+  initialCommitsError,
 }: RepoDetailClientProps) {
   const [tab, setTab] = useState<Tab>("commits");
   const [branch, setBranch] = useState(defaultBranch);
@@ -102,7 +106,14 @@ export function RepoDetailClient({
       </div>
 
       {tab === "commits" ? (
-        <CommitsTab owner={owner} repo={repo} branch={branch} />
+        <CommitsTab
+          owner={owner}
+          repo={repo}
+          branch={branch}
+          defaultBranch={defaultBranch}
+          initialCommits={initialCommits}
+          initialCommitsError={initialCommitsError}
+        />
       ) : (
         <FilesTab owner={owner} repo={repo} branch={branch} />
       )}
@@ -114,16 +125,35 @@ function CommitsTab({
   owner,
   repo,
   branch,
+  defaultBranch,
+  initialCommits,
+  initialCommitsError,
 }: {
   owner: string;
   repo: string;
   branch: string;
+  defaultBranch: string;
+  initialCommits: CommitSummary[];
+  initialCommitsError: string | null;
 }) {
-  const [commits, setCommits] = useState<CommitSummary[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [commits, setCommits] = useState<CommitSummary[] | null>(
+    branch === defaultBranch && !initialCommitsError ? initialCommits : null,
+  );
+  const [error, setError] = useState<string | null>(
+    branch === defaultBranch ? initialCommitsError : null,
+  );
 
   useEffect(() => {
     let cancelled = false;
+
+    if (branch === defaultBranch) {
+      setCommits(initialCommitsError ? null : initialCommits);
+      setError(initialCommitsError);
+      return () => {
+        cancelled = true;
+      };
+    }
+
     setCommits(null);
     setError(null);
     fetchJson<CommitSummary[]>(
@@ -138,7 +168,7 @@ function CommitsTab({
     return () => {
       cancelled = true;
     };
-  }, [owner, repo, branch]);
+  }, [owner, repo, branch, defaultBranch, initialCommits, initialCommitsError]);
 
   if (error) {
     return <ErrorState title="Couldn't load commits" description={error} />;
