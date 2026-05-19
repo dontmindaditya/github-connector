@@ -33,7 +33,30 @@ interface ContentsOther {
 type ContentsResponse = ContentsDir | ContentsFile | ContentsOther;
 
 async function fetchJson<T>(url: string): Promise<T> {
-  const res = await fetch(url);
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), 15_000);
+
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      cache: "no-store",
+      credentials: "same-origin",
+      signal: controller.signal,
+    });
+  } catch (err) {
+    if ((err as Error).name === "AbortError") {
+      throw new Error("GitHub request timed out. Please try again.");
+    }
+    throw err;
+  } finally {
+    window.clearTimeout(timeout);
+  }
+
+  const contentType = res.headers.get("content-type") ?? "";
+  if (!contentType.includes("application/json")) {
+    throw new Error(`Expected JSON but received ${res.status}`);
+  }
+
   const body = await res.json();
   if (!res.ok || !body.ok) {
     throw new Error(body?.error?.message ?? `Request failed: ${res.status}`);
@@ -62,6 +85,7 @@ export function RepoDetailClient({
         <div className="flex h-9 items-center gap-0.5 rounded-md border border-gray-4 bg-gray-1 p-0.5">
           {(["commits", "files"] as const).map((t) => (
             <button
+              type="button"
               key={t}
               onClick={() => setTab(t)}
               className={
@@ -180,6 +204,7 @@ function FilesTab({
       {/* Path breadcrumb */}
       <nav className="mb-3 flex flex-wrap items-center gap-1 text-xs">
         <button
+          type="button"
           onClick={() => setPath("")}
           className={
             "rounded px-1.5 py-0.5 font-mono transition-colors " +
@@ -197,6 +222,7 @@ function FilesTab({
             <span key={sub} className="flex items-center gap-1">
               <span className="text-gray-5">/</span>
               <button
+                type="button"
                 onClick={() => setPath(sub)}
                 className={
                   "rounded px-1.5 py-0.5 font-mono transition-colors " +
@@ -224,6 +250,7 @@ function FilesTab({
               .map((entry) => (
                 <li key={entry.path}>
                   <button
+                    type="button"
                     onClick={() => {
                       if (entry.type === "dir") setPath(entry.path);
                       else if (entry.htmlUrl) window.open(entry.htmlUrl, "_blank");
