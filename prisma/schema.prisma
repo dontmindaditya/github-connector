@@ -1,0 +1,176 @@
+// =============================================================================
+// Prisma schema for the GitHub Connector
+// =============================================================================
+//
+// Design notes
+// ------------
+// 1. We DO NOT store any long-lived GitHub user tokens. GitHub Apps don't issue
+//    those by default — the App authenticates with a short-lived JWT signed by
+//    its private key, and we exchange that JWT for an installation access token
+//    that expires after ~1 hour. The installation_id is the only piece of
+//    durable identity we need.
+//
+// 2. installation_id by itself is not a secret. It identifies an install, but
+//    you cannot use it to call the GitHub API without also possessing the
+//    App's private key. So it lives in plaintext on `GitHubInstallation`.
+//
+// 3. Installation access tokens ARE secrets — anyone holding one can call the
+//    API as the installation until it expires. We cache them encrypted in
+//    `EncryptedToken` and refresh ~5 minutes before expiry. They're cached
+//    only to avoid minting a fresh JWT + token on every request; the security
+//    posture doesn't depend on caching, it depends on encryption + expiry.
+//
+// 4. AES-256-GCM is authenticated encryption. Each record stores its own IV
+//    (12 bytes, random per record) and auth tag (16 bytes). If either the
+//    ciphertext or the tag is tampered with, decrypt() throws.
+//
+// 5. Repository rows are a denormalized cache of GitHub state. The source of
+//    truth is GitHub; we keep this table in sync via the
+//    `installation_repositories` webhook so the dashboard can render without
+//    a round-trip to GitHub on every page load.
+// =============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// -----------------------------------------------------------------------------
+// User — your app's user. Replace/extend to match your auth provider
+// (NextAuth, Clerk, Supabase Auth, etc.). Kept minimal here so the connector
+// can drop into any auth setup.
+// -----------------------------------------------------------------------------
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  name      String?
+  image     String?
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  installations GitHubInstallation[]
+
+  @@map("users")
+}
+
+// -----------------------------------------------------------------------------
+// GitHubInstallation — one row per GitHub App install.
+//
+// A single user can install the App into multiple accounts (their personal
+// account + several orgs they belong to), so this is a 1:N from User.
+//
+// `accountType` is either "User" or "Organization" — useful when rendering
+// the UI ("Installed on the @acme org" vs "Installed on @aditya").
+//
+// `suspendedAt` is set when GitHub sends an `installation.suspend` webhook;
+// nullable so we can soft-tombstone rather than hard-delete and lose history.
+// -----------------------------------------------------------------------------
+model GitHubInstallation {
+  id             String   @id @default(cuid())
+  installationId BigInt   @unique @map("installation_id") // GitHub's numeric ID
+  accountId      BigInt   @map("account_id")              // GitHub user/org ID
+  accountLogin   String   @map("account_login")           // e.g. "aditya-c"
+  accountType    String   @map("account_type")            // "User" | "Organization"
+  targetType     String   @map("target_type")             // mirrors accountType, kept for clarity
+  repositorySelection String @map("repository_selection") // "all" | "selected"
+  permissions    Json                                     // raw permissions blob from GitHub
+  events         String[] @default([])                    // events the install subscribed to
+  suspendedAt    DateTime? @map("suspended_at")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  userId String @map("user_id")
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  token        EncryptedToken?
+  repositories Repository[]
+
+  @@index([userId])
+  @@index([accountLogin])
+  @@map("github_installations")
+}
+
+// -----------------------------------------------------------------------------
+// EncryptedToken — cached installation access token.
+//
+// One-to-one with GitHubInstallation. We overwrite this row on refresh rather
+// than appending history; if you want an audit trail, add a separate
+// TokenRotation table.
+//
+// `ciphertext`, `iv`, `authTag` are all base64 strings — easier to debug and
+// move across systems than raw bytes. Decryption rebuilds the buffers.
+//
+// `expiresAt` mirrors what GitHub returned. We treat anything within 5 min
+// of expiry as already expired and force a refresh.
+// -----------------------------------------------------------------------------
+model EncryptedToken {
+  id         String   @id @default(cuid())
+  ciphertext String   // base64
+  iv         String   // base64, 12 bytes
+  authTag    String   @map("auth_tag") // base64, 16 bytes
+  expiresAt  DateTime @map("expires_at")
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  installationId String             @unique @map("installation_id")
+  installation   GitHubInstallation @relation(fields: [installationId], references: [id], onDelete: Cascade)
+
+  @@index([expiresAt])
+  @@map("encrypted_tokens")
+}
+
+// -----------------------------------------------------------------------------
+// Repository — denormalized cache of repos the installation can access.
+//
+// Kept in sync via the `installation_repositories` webhook
+// (added / removed events). Private repos are stored exactly like public ones;
+// the `private` boolean is just metadata. Access is gated entirely by the
+// installation token's scope, not by anything we store here.
+// -----------------------------------------------------------------------------
+model Repository {
+  id            String   @id @default(cuid())
+  githubRepoId  BigInt   @unique @map("github_repo_id")
+  nodeId        String   @map("node_id")
+  name          String                                  // "next.js"
+  fullName      String   @map("full_name")              // "vercel/next.js"
+  private       Boolean  @default(false)
+  defaultBranch String   @default("main") @map("default_branch")
+  htmlUrl       String   @map("html_url")
+  description   String?
+  language      String?
+  archived      Boolean  @default(false)
+  disabled      Boolean  @default(false)
+  pushedAt      DateTime? @map("pushed_at")
+  lastSyncedAt  DateTime @default(now()) @map("last_synced_at")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  installationId String             @map("installation_id")
+  installation   GitHubInstallation @relation(fields: [installationId], references: [id], onDelete: Cascade)
+
+  @@index([installationId])
+  @@index([fullName])
+  @@index([private])
+  @@map("repositories")
+}
+
+// -----------------------------------------------------------------------------
+// WebhookDelivery — idempotency log for incoming GitHub webhooks.
+//
+// GitHub retries deliveries; we use `X-GitHub-Delivery` as a natural unique key
+// to skip duplicate processing. Rows can be pruned on a schedule (e.g. 30 days).
+// -----------------------------------------------------------------------------
+model WebhookDelivery {
+  id         String   @id @default(cuid())
+  deliveryId String   @unique @map("delivery_id") // X-GitHub-Delivery header
+  event      String                               // X-GitHub-Event header
+  action     String?                              // payload.action when present
+  receivedAt DateTime @default(now()) @map("received_at")
+
+  @@index([receivedAt])
+  @@map("webhook_deliveries")
+}

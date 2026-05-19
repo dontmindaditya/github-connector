@@ -1,36 +1,121 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# GitHub Connector
 
-## Getting Started
+A production-ready GitHub integration for Next.js apps, modeled after Vercel's GitHub connector. Supports public and private repositories via GitHub Apps (not OAuth).
 
-First, run the development server:
-
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+```
+┌──────────────────┐         ┌───────────────────┐
+│  Your Next.js    │ ◀──────│  GitHub Webhooks  │
+│      App         │  HMAC   │  (push, install)  │
+└────────┬─────────┘         └───────────────────┘
+         │
+         │  short-lived installation tokens (~1h)
+         │  encrypted (AES-256-GCM) at rest
+         │
+         ▼
+┌──────────────────────────────────────────────────┐
+│              GitHub REST API                     │
+│   /repos, /branches, /commits, /contents         │
+└──────────────────────────────────────────────────┘
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## What's included
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+- **GitHub App auth.** App JWT (RS256) → installation access token exchange, encrypted caching with auto-refresh.
+- **Webhooks.** Receiver verifies `X-Hub-Signature-256`, dedupes via `X-GitHub-Delivery`, dispatches `push` / `installation` / `installation_repositories` / `pull_request`.
+- **Encryption.** AES-256-GCM with per-record IVs, used for installation tokens and any other secret you encrypt.
+- **Security.** CSRF (double-submit cookie), OAuth state, HSTS + CSP, rate limiting hook.
+- **UI.** Vercel-style black/white dashboard, repo list with search and public/private filter, repo detail with branch switcher and commit list.
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Quick start
 
-## Learn More
+```bash
+# 1. Install
+pnpm install
 
-To learn more about Next.js, take a look at the following resources:
+# 2. Set up a GitHub App
+# → see docs/GITHUB_APP_SETUP.md
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+# 3. Configure environment
+cp .env.example .env.local
+# Generate the two secrets you need:
+echo "ENCRYPTION_KEY=\"$(openssl rand -base64 32)\""
+echo "GITHUB_WEBHOOK_SECRET=\"$(openssl rand -hex 32)\""
+# Fill in the rest from your GitHub App settings page
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+# 4. Database
+pnpm prisma migrate dev --name init
 
-## Deploy on Vercel
+# 5. Run
+pnpm dev
+```
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+Visit `http://localhost:3000` and click **Connect GitHub**.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Docs
+
+| File | What it covers |
+|---|---|
+| [`docs/GITHUB_APP_SETUP.md`](docs/GITHUB_APP_SETUP.md) | Creating the GitHub App, permissions, generating credentials |
+| [`docs/ENVIRONMENT.md`](docs/ENVIRONMENT.md) | Every env var, how to generate it, how to rotate keys |
+| [`docs/DEPLOYMENT_VERCEL.md`](docs/DEPLOYMENT_VERCEL.md) | Postgres provider choice, env config on Vercel, smoke tests, hardening checklist |
+
+## Project layout
+
+```
+github-connector/
+├── prisma/
+│   └── schema.prisma              # User, GitHubInstallation, EncryptedToken, Repository, WebhookDelivery
+├── docs/
+│   ├── GITHUB_APP_SETUP.md
+│   ├── ENVIRONMENT.md
+│   └── DEPLOYMENT_VERCEL.md
+├── src/
+│   ├── app/
+│   │   ├── (dashboard)/           # /connect, /repositories, /repositories/[id]
+│   │   ├── api/
+│   │   │   ├── github/            # install, callback, repos, branches, commits, contents, disconnect
+│   │   │   └── webhooks/github/   # webhook receiver
+│   │   ├── layout.tsx
+│   │   ├── globals.css
+│   │   └── page.tsx
+│   ├── lib/
+│   │   ├── github/                # JWT, token exchange, octokit factory, webhook handlers
+│   │   ├── crypto/                # encrypt, decrypt, webhook signature verify
+│   │   ├── auth/                  # session stub, OAuth state, CSRF
+│   │   ├── ratelimit/             # in-memory limiter (swap for Upstash in prod)
+│   │   ├── db/                    # Prisma singleton
+│   │   └── env.ts                 # Zod-validated env, fails fast on bad config
+│   ├── components/                # ConnectGitHubButton, RepositoryList, RepositoryCard, BranchSelector, CommitList + ui/
+│   ├── types/
+│   │   └── github.ts              # lean shapes for installations, repos, branches, commits, webhooks
+│   └── middleware.ts              # security headers, CSRF token issuance
+├── .env.example
+├── tailwind.config.ts
+├── tsconfig.json
+├── next.config.ts
+└── package.json
+```
+
+## Architecture overview
+
+**Why GitHub Apps, not OAuth Apps.** Per-repo access controlled by the user, short-lived tokens (~1h), native webhooks, higher rate limits (5,000/hr per installation), revocable instantly via uninstall. Long version in `docs/GITHUB_APP_SETUP.md`.
+
+**Auth flow.**
+1. `/api/github/install` — mint OAuth state cookie, redirect to `github.com/apps/{slug}/installations/new`.
+2. User picks repos on GitHub.
+3. GitHub → `/api/github/callback` with `installation_id` + `state`. Verify state, fetch install metadata, sync repo list, redirect to `/repositories`.
+4. Any subsequent GitHub call: `octokit-factory` looks up cached encrypted token, refreshes 5min before expiry, returns auth'd Octokit.
+
+**Trust boundary.** Frontend never sees a token, never sees the private key, never sees the installation ID in a usable form. All GitHub calls happen in route handlers. UI talks to `/api/...` which talks to GitHub.
+
+**Idempotency.** Webhook deliveries are deduped by `X-GitHub-Delivery`. All handlers use upsert/deleteMany so retries are safe.
+
+## What's NOT included (deliberately)
+
+- **App user authentication.** The connector ships with a thin stub (`src/lib/auth/session.ts`). Bring your own — NextAuth, Clerk, Supabase, custom. The stub is a one-function replacement; see the integration snippets in [`docs/DEPLOYMENT_VERCEL.md`](docs/DEPLOYMENT_VERCEL.md#auth-integration).
+- **Write operations on repos.** Read-only by design (Contents: Read on the App permissions). Adding write is a permission change + new route handlers; nothing in the architecture prevents it.
+- **Production rate-limit store.** The in-memory limiter works for one instance. Swap for Upstash Redis on serverless — the file documents the exact 6-line change.
+
+## License
+
+MIT. Use it, fork it, ship it.

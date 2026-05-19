@@ -1,0 +1,57 @@
+@import "tailwindcss";
+
+/* -----------------------------------------------------------------------------
+ * Theme tokens (Tailwind v4 CSS-first config)
+ *
+ * Mirrors src/components/ui/tokens.js. Tailwind v4 reads @theme blocks at
+ * build time and emits matching utility classes (bg-gray-1, text-gray-7,
+ * border-gray-4, etc.) so the component code can stay declarative.
+ * --------------------------------------------------------------------------- */
+@theme {
+  --color-bg: #000000;
+  --color-fg: #ffffff;
+  --color-gray-1: #0a0a0a;
+  --color-gray-2: #111111;
+  --color-gray-3: #1a1a1a;
+  --color-gray-4: #2a2a2a;
+  --color-gray-5: #3d3d3d;
+  --color-gray-6: #666666;
+  --color-gray-7: #888888;
+  --color-gray-8: #a3a3a3;
+  --color-gray-9: #ededed;
+
+  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, SFMono-Regular, monospace;
+}
+
+html,
+body {
+  background: var(--color-bg);
+  color: var(--color-gray-9);
+}
+
+::selection {
+  background: var(--color-fg);
+  color: var(--color-bg);
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-gray-4);
+  border-radius: 999px;
+  border: 2px solid var(--color-bg);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-gray-5);
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-fg);
+  outline-offset: 2px;
+}
